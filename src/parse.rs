@@ -133,9 +133,11 @@ fn tokenizer() {
 }
 
 /*
-    expr =  term ('+' | '-' ) expr | term
-    term = number | variable | term ('*' | '/' ) expr | prefix term | func '(' arglist ')' | '(' expr ')'
-    arglist = expr (',' epxr)*
+    expr = expr ('+' | '-') term | term
+    term = term ('*' | '/' ) factor | -term | implicit_multiplication | factor
+    factor = number | variable | func '(' arglist ')' | '(' expr ')'
+    implicit_multiplication = factor term
+    arglist = expr (',' expr)*
 
     variable = identifier
     func = identifier
@@ -152,12 +154,12 @@ pub fn parse_expr<'a>(
                 if t.eq(op) {
                     let expr: Box<dyn Expression> = match op {
                         Token::Plus => Box::new(BasicOp::Plus(
-                            parse_term(&tokens[..i], language)?,
-                            parse_expr(&tokens[i + 1..], language)?,
+                            parse_expr(&tokens[..i], language)?,
+                            parse_term(&tokens[i + 1..], language)?,
                         )),
                         Token::Minus => Box::new(BasicOp::Minus(
-                            parse_term(&tokens[..i], language)?,
-                            parse_expr(&tokens[i + 1..], language)?,
+                            parse_expr(&tokens[..i], language)?,
+                            parse_term(&tokens[i + 1..], language)?,
                         )),
                         _ => unreachable!(),
                     };
@@ -174,11 +176,55 @@ fn parse_term<'a>(
     tokens: &[Token],
     language: &'a dyn Language,
 ) -> Option<Box<dyn Expression + 'a>> {
+    [Token::Multiply, Token::Divide]
+        .iter()
+        .find_map(|op| {
+            tokens.iter().enumerate().find_map(|(i, t)| {
+                if t.eq(op) {
+                    let expr: Box<dyn Expression> = match op {
+                        Token::Multiply => Box::new(BasicOp::Multiply(
+                            parse_term(&tokens[..i], language)?,
+                            parse_factor(&tokens[i + 1..], language)?,
+                        )),
+                        Token::Divide => Box::new(BasicOp::Divide(
+                            parse_term(&tokens[..i], language)?,
+                            parse_factor(&tokens[i + 1..], language)?,
+                        )),
+                        _ => unreachable!(),
+                    };
+                    Some(expr)
+                } else {
+                    None
+                }
+            })
+        })
+        .or_else(|| {
+            tokens.first().and_then(|t| match t {
+                Token::Minus if tokens.len() > 1 => Some(Box::new(BasicOp::Negate(parse_factor(
+                    &tokens[1..],
+                    language,
+                )?))
+                    as Box<dyn Expression>),
+                _ => None,
+            })
+        })
+        .or_else(|| parse_implicit_multiplication(tokens, language))
+        .or_else(|| parse_factor(tokens, language))
+}
+
+fn parse_implicit_multiplication<'a>(
+    tokens: &[Token],
+    language: &'a dyn Language,
+) -> Option<Box<dyn Expression + 'a>> {
+    None
+}
+
+fn parse_factor<'a>(
+    tokens: &[Token],
+    language: &'a dyn Language,
+) -> Option<Box<dyn Expression + 'a>> {
     match tokens.first()? {
         Token::Num(num) if tokens.len() == 1 => Some(Box::new(*num) as Box<dyn Expression>),
-        Token::Minus => Some(
-            Box::new(BasicOp::Negate(parse_term(&tokens[1..], language)?)) as Box<dyn Expression>,
-        ),
         Token::Identifier(id)
             if tokens.get(1) == Some(&Token::OpenBracket)
                 && tokens.last() == Some(&Token::CloseBracket)
@@ -199,28 +245,6 @@ fn parse_term<'a>(
         }
         _ => None,
     }
-    .or_else(|| {
-        [Token::Multiply, Token::Divide].iter().find_map(|op| {
-            tokens.iter().enumerate().find_map(|(i, t)| {
-                if t.eq(op) {
-                    let expr: Box<dyn Expression> = match op {
-                        Token::Multiply => Box::new(BasicOp::Multiply(
-                            parse_term(&tokens[..i], language)?,
-                            parse_expr(&tokens[i + 1..], language)?,
-                        )),
-                        Token::Divide => Box::new(BasicOp::Divide(
-                            parse_term(&tokens[..i], language)?,
-                            parse_expr(&tokens[i + 1..], language)?,
-                        )),
-                        _ => unreachable!(),
-                    };
-                    Some(expr)
-                } else {
-                    None
-                }
-            })
-        })
-    })
 }
 
 fn parse_arglist<'a>(

@@ -72,12 +72,24 @@ mod tests {
             ) - f32::powf(1.1, (10.0 - y) * x + y)
         };
 
-        let x = 1.0;
         let y = 2.5;
 
         assert_eq!(
-            parse(expr, &DefaultLanguage::default()).map(|e| e.eval(&[("x", &x), ("y", &y)])),
-            Some(Ok(actual(x, y)))
+            parse(expr, &DefaultLanguage::default()).map(|e| e.eval(&[("x", &"y"), ("y", &y)])),
+            Some(Ok(actual(y, y)))
         )
+    }
+
+    #[test]
+    fn order_of_ops() {
+        assert_eq!(
+            parse("1/2/3", &DefaultLanguage::default()).map(|e| e.eval(&[])),
+            Some(Ok(1.0 / 2.0 / 3.0))
+        );
+
+        assert_eq!(
+            parse("1-2-3", &DefaultLanguage::default()).map(|e| e.eval(&[])),
+            Some(Ok(-4.0))
+        );
     }
 }
