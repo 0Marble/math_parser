@@ -7,13 +7,14 @@ pub enum Token {
     Minus,
     Multiply,
     Divide,
-    Identifier(String),
+    Variable(String),
+    Function(String),
     OpenBracket,
     CloseBracket,
     Coma,
 }
 
-pub fn tokenize(mut src: &str) -> Option<Vec<Token>> {
+pub fn tokenize(mut src: &str, language: &dyn Language) -> Option<Vec<Token>> {
     let mut res = vec![];
     loop {
         src = src.trim_start();
@@ -44,7 +45,11 @@ pub fn tokenize(mut src: &str) -> Option<Vec<Token>> {
             res.push(Token::Num(num));
         } else if let Some((identifier, next)) = read_identifier(src) {
             src = next;
-            res.push(Token::Identifier(identifier));
+            if language.find_func(&identifier).is_some() {
+                res.push(Token::Function(identifier))
+            } else {
+                res.push(Token::Variable(identifier))
+            }
         } else if src.is_empty() {
             return Some(res);
         } else {
@@ -106,6 +111,8 @@ fn read_identifier(src: &str) -> Option<(String, &str)> {
 #[test]
 fn tokenizer() {
     let expr = "122+904-23.23*(72-x/4)+pow(2,y)";
+    let lang = DefaultLanguage::default();
+
     let expr_tokenized = vec![
         Token::Num(122.0),
         Token::Plus,
@@ -116,31 +123,27 @@ fn tokenizer() {
         Token::OpenBracket,
         Token::Num(72.0),
         Token::Minus,
-        Token::Identifier("x".to_string()),
+        Token::Variable("x".to_string()),
         Token::Divide,
         Token::Num(4.0),
         Token::CloseBracket,
         Token::Plus,
-        Token::Identifier("pow".to_string()),
+        Token::Function("pow".to_string()),
         Token::OpenBracket,
         Token::Num(2.0),
         Token::Coma,
-        Token::Identifier("y".to_string()),
+        Token::Variable("y".to_string()),
         Token::CloseBracket,
     ];
 
-    assert_eq!(tokenize(expr), Some(expr_tokenized));
+    assert_eq!(tokenize(expr, &lang), Some(expr_tokenized));
 }
 
 /*
     expr = expr ('+' | '-') term | term
-    term = term ('*' | '/' ) factor | -term | implicit_multiplication | factor
+    term = term ('*' | '/' ) factor | -term | factor term | factor
     factor = number | variable | func '(' arglist ')' | '(' expr ')'
-    implicit_multiplication = factor term
     arglist = expr (',' expr)*
-
-    variable = identifier
-    func = identifier
 */
 
 pub fn parse_expr<'a>(
@@ -200,7 +203,7 @@ fn parse_term<'a>(
         })
         .or_else(|| {
             tokens.first().and_then(|t| match t {
-                Token::Minus if tokens.len() > 1 => Some(Box::new(BasicOp::Negate(parse_factor(
+                Token::Minus if tokens.len() > 1 => Some(Box::new(BasicOp::Negate(parse_term(
                     &tokens[1..],
                     language,
                 )?))
@@ -216,7 +219,12 @@ fn parse_implicit_multiplication<'a>(
     tokens: &[Token],
     language: &'a dyn Language,
 ) -> Option<Box<dyn Expression + 'a>> {
-    None
+    tokens.iter().enumerate().find_map(|(i, _)| {
+        Some(Box::new(BasicOp::Multiply(
+            parse_factor(&tokens[..i], language)?,
+            parse_factor(&tokens[i..], language)?,
+        )) as Box<dyn Expression>)
+    })
 }
 
 fn parse_factor<'a>(
@@ -225,7 +233,7 @@ fn parse_factor<'a>(
 ) -> Option<Box<dyn Expression + 'a>> {
     match tokens.first()? {
         Token::Num(num) if tokens.len() == 1 => Some(Box::new(*num) as Box<dyn Expression>),
-        Token::Identifier(id)
+        Token::Function(id)
             if tokens.get(1) == Some(&Token::OpenBracket)
                 && tokens.last() == Some(&Token::CloseBracket)
                 && tokens.len() > 3
@@ -237,7 +245,7 @@ fn parse_factor<'a>(
                 id.to_owned(),
             ))
         }
-        Token::Identifier(id) if tokens.len() == 1 && language.find_func(id).is_none() => {
+        Token::Variable(id) if tokens.len() == 1 && language.find_func(id).is_none() => {
             Some(Variable::new_expression(id.to_owned()))
         }
         Token::OpenBracket if Some(&Token::CloseBracket) == tokens.last() => {

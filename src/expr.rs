@@ -12,12 +12,22 @@ pub enum Error {
 }
 
 pub trait Expression {
-    fn eval(&self, variables: &[(&str, &dyn Expression)]) -> Result<f32, Error>;
+    fn eval(&self, variables: &[(&str, f32)]) -> Result<f32, Error>;
+    fn compile<'a>(&'a self, variables: &[(&str, f32)]) -> Result<Box<dyn Expression + 'a>, Error>;
+    fn to_number(&self) -> Option<f32>;
 }
 
 impl Expression for f32 {
-    fn eval(&self, _: &[(&str, &dyn Expression)]) -> Result<f32, Error> {
+    fn eval(&self, _: &[(&str, f32)]) -> Result<f32, Error> {
         Ok(*self)
+    }
+
+    fn compile<'a>(&'a self, _: &[(&str, f32)]) -> Result<Box<dyn Expression + 'a>, Error> {
+        Ok(Box::new(*self))
+    }
+
+    fn to_number(&self) -> Option<f32> {
+        Some(*self)
     }
 }
 
@@ -32,22 +42,47 @@ impl Variable {
 }
 
 impl Expression for Variable {
-    fn eval(&self, variables: &[(&str, &dyn Expression)]) -> Result<f32, Error> {
+    fn eval(&self, variables: &[(&str, f32)]) -> Result<f32, Error> {
         variables.iter().find(|(v, _)| v.eq(&self.name)).map_or(
             Err(Error::UndefinedVariable(self.name.clone())),
             |(_, e)| e.eval(variables),
         )
     }
+
+    fn compile<'a>(&'a self, variables: &[(&str, f32)]) -> Result<Box<dyn Expression + 'a>, Error> {
+        Ok(variables
+            .iter()
+            .find(|(v, _)| v.eq(&self.name))
+            .map_or_else(
+                || Variable::new_expression(self.name.clone()),
+                |(_, val)| Box::new(*val),
+            ))
+    }
+
+    fn to_number(&self) -> Option<f32> {
+        None
+    }
 }
 
 impl<'a> Expression for &'a str {
-    fn eval(&self, variables: &[(&str, &dyn Expression)]) -> Result<f32, Error> {
+    fn eval(&self, variables: &[(&str, f32)]) -> Result<f32, Error> {
         variables
             .iter()
             .find(|(v, _)| v.eq(self))
             .map_or(Err(Error::UndefinedVariable(self.to_string())), |(_, e)| {
                 e.eval(variables)
             })
+    }
+
+    fn compile<'b>(&'b self, variables: &[(&str, f32)]) -> Result<Box<dyn Expression + 'b>, Error> {
+        Ok(variables.iter().find(|(v, _)| v.eq(self)).map_or_else(
+            || Variable::new_expression(self.to_string()),
+            |(_, val)| Box::new(*val),
+        ))
+    }
+
+    fn to_number(&self) -> Option<f32> {
+        None
     }
 }
 
@@ -60,7 +95,7 @@ pub enum BasicOp<'a> {
 }
 
 impl<'a> Expression for BasicOp<'a> {
-    fn eval(&self, variables: &[(&str, &dyn Expression)]) -> Result<f32, Error> {
+    fn eval(&self, variables: &[(&str, f32)]) -> Result<f32, Error> {
         match self {
             BasicOp::Plus(left, right) => left
                 .eval(variables)
@@ -83,6 +118,66 @@ impl<'a> Expression for BasicOp<'a> {
                 }),
             BasicOp::Negate(r) => r.eval(variables).map(|res| -res),
         }
+    }
+
+    fn compile<'b>(&'b self, variables: &[(&str, f32)]) -> Result<Box<dyn Expression + 'b>, Error> {
+        match self {
+            BasicOp::Plus(l, r) => {
+                let l = l.compile(variables)?;
+                let r = r.compile(variables)?;
+                Ok(match (l.to_number(), r.to_number()) {
+                    (None, None) => Box::new(BasicOp::Plus(l, r)),
+                    (None, Some(r)) => Box::new(BasicOp::Plus(l, Box::new(r))),
+                    (Some(l), None) => Box::new(BasicOp::Plus(Box::new(l), r)),
+                    (Some(l), Some(r)) => Box::new(l + r),
+                })
+            }
+            BasicOp::Minus(l, r) => {
+                let l = l.compile(variables)?;
+                let r = r.compile(variables)?;
+                Ok(match (l.to_number(), r.to_number()) {
+                    (None, None) => Box::new(BasicOp::Minus(l, r)),
+                    (None, Some(r)) => Box::new(BasicOp::Minus(l, Box::new(r))),
+                    (Some(l), None) => Box::new(BasicOp::Minus(Box::new(l), r)),
+                    (Some(l), Some(r)) => Box::new(l - r),
+                })
+            }
+            BasicOp::Multiply(l, r) => {
+                let l = l.compile(variables)?;
+                let r = r.compile(variables)?;
+                Ok(match (l.to_number(), r.to_number()) {
+                    (None, None) => Box::new(BasicOp::Multiply(l, r)),
+                    (None, Some(r)) => Box::new(BasicOp::Multiply(l, Box::new(r))),
+                    (Some(l), None) => Box::new(BasicOp::Multiply(Box::new(l), r)),
+                    (Some(l), Some(r)) => Box::new(l * r),
+                })
+            }
+            BasicOp::Divide(l, r) => {
+                let l = l.compile(variables)?;
+                let r = r.compile(variables)?;
+
+                match (l.to_number(), r.to_number()) {
+                    (None, None) => Ok(Box::new(BasicOp::Divide(l, r))),
+                    (None, Some(r)) => Ok(Box::new(BasicOp::Divide(l, Box::new(r)))),
+                    (Some(l), None) => Ok(Box::new(BasicOp::Divide(Box::new(l), r))),
+                    (Some(l), Some(r)) if r != 0.0 => Ok(Box::new(l / r)),
+                    _ => Err(Error::MathError("Divide by zero".to_string())),
+                }
+            }
+            BasicOp::Negate(val) => {
+                let val = val.compile(variables)?;
+
+                if let Some(val) = val.to_number() {
+                    Ok(Box::new(-val))
+                } else {
+                    Ok(Box::new(BasicOp::Negate(val)))
+                }
+            }
+        }
+    }
+
+    fn to_number(&self) -> Option<f32> {
+        None
     }
 }
 
@@ -146,7 +241,7 @@ impl<'a> FunctionExpression<'a> {
 }
 
 impl<'a> Expression for FunctionExpression<'a> {
-    fn eval(&self, variables: &[(&str, &dyn Expression)]) -> Result<f32, Error> {
+    fn eval(&self, variables: &[(&str, f32)]) -> Result<f32, Error> {
         let func = self
             .language
             .find_func(&self.name)
@@ -157,6 +252,37 @@ impl<'a> Expression for FunctionExpression<'a> {
             .map(|arg| arg.eval(variables))
             .collect::<Result<Vec<_>, _>>()?;
         func.eval(&calculated_args)
+    }
+
+    fn compile<'b>(&'b self, variables: &[(&str, f32)]) -> Result<Box<dyn Expression + 'b>, Error> {
+        let func = self
+            .language
+            .find_func(&self.name)
+            .ok_or_else(|| Error::UndefinedFunction(self.name.clone()))?;
+
+        let compiled_args = self
+            .args
+            .iter()
+            .map(|arg| arg.compile(variables))
+            .collect::<Result<Vec<_>, _>>()?;
+
+        if let Some(num_args) = compiled_args
+            .iter()
+            .map(|a| a.to_number())
+            .collect::<Option<Vec<_>>>()
+        {
+            Ok(Box::new(func.eval(&num_args)?))
+        } else {
+            Ok(FunctionExpression::new_expression(
+                self.language,
+                compiled_args,
+                self.name.clone(),
+            ))
+        }
+    }
+
+    fn to_number(&self) -> Option<f32> {
+        None
     }
 }
 
@@ -293,27 +419,5 @@ fn expression_eval() {
     );
     let add: Box<dyn Expression> =
         Box::new(BasicOp::Plus(pow, Variable::new_expression("x".to_owned())));
-    assert_eq!(add.eval(&[("x", &3.0)]), Ok(1027.0));
-}
-
-#[test]
-fn variable_as_expr() {
-    use super::*;
-
-    let lang = DefaultLanguage::default();
-    let expr = parse_expr(&tokenize("y+x").unwrap(), &lang).unwrap();
-    assert_eq!(
-        expr.eval(&[
-            (
-                "x",
-                &BasicOp::Multiply(
-                    Variable::new_expression("y".to_string()),
-                    Variable::new_expression("z".to_string())
-                )
-            ),
-            ("y", &1.0),
-            ("z", &2.0)
-        ]),
-        Ok(3.0)
-    );
+    assert_eq!(add.eval(&[("x", 3.0)]), Ok(1027.0));
 }
